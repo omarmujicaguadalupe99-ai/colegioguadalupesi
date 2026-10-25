@@ -1,0 +1,120 @@
+import os
+import sqlite3
+import csv
+import io
+from flask import Flask, render_template, request, redirect, url_for, session, flash, Response
+
+app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'clave_secreta_guadalupe_2026')
+
+# Contraseña de acceso al panel de administración
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', '1619')
+
+def get_db_connection():
+    conn = sqlite3.connect('colegio_guadalupe.db')
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS registros (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rep_nombre TEXT NOT NULL,
+            rep_telefono TEXT NOT NULL,
+            est_nombre TEXT NOT NULL,
+            est_grado TEXT,
+            fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+# Inicializar BD al arrancar
+init_db()
+
+@app.route('/')
+def formulario():
+    """Vista del formulario público para los representantes"""
+    return render_template('formulario.html')
+
+@app.route('/guardar', methods=['POST'])
+def guardar():
+    """Ruta que recibe y almacena los datos desde los teléfonos"""
+    rep_nombre = request.form.get('rep_nombre', '').strip()
+    rep_telefono = request.form.get('rep_telefono', '').strip()
+    est_nombre = request.form.get('est_nombre', '').strip()
+    est_grado = request.form.get('est_grado', '').strip()
+
+    if not rep_nombre or not rep_telefono or not est_nombre:
+        flash('Por favor complete todos los campos obligatorios.', 'danger')
+        return redirect(url_for('formulario'))
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO registros (rep_nombre, rep_telefono, est_nombre, est_grado)
+        VALUES (?, ?, ?, ?)
+    ''', (rep_nombre, rep_telefono, est_nombre, est_grado))
+    conn.commit()
+    conn.close()
+
+    flash('¡Registro completado con éxito en la U.E. Colegio Nuestra Señora de Guadalupe!', 'success')
+    return redirect(url_for('formulario'))
+
+@app.route('/admin', methods=['GET', 'POST'])
+def admin():
+    """Panel de Administración protegido con clave secreta (1619)"""
+    if request.method == 'POST':
+        password = request.form.get('password', '')
+        if password == ADMIN_PASSWORD:
+            session['admin_logged_in'] = True
+            return redirect(url_for('admin'))
+        else:
+            flash('Contraseña de acceso incorrecta.', 'danger')
+
+    if not session.get('admin_logged_in'):
+        return render_template('admin_login.html')
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM registros ORDER BY id DESC')
+    registros = cursor.fetchall()
+    conn.close()
+
+    return render_template('admin_dashboard.html', registros=registros)
+
+@app.route('/admin/logout')
+def logout():
+    session.pop('admin_logged_in', None)
+    return redirect(url_for('admin'))
+
+@app.route('/admin/exportar')
+def exportar_csv():
+    """Exporta los registros a un archivo Excel/CSV descargable"""
+    if not session.get('admin_logged_in'):
+        return redirect(url_for('admin'))
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, rep_nombre, rep_telefono, est_nombre, est_grado, fecha FROM registros ORDER BY id DESC')
+    registros = cursor.fetchall()
+    conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['N°', 'Representante', 'Teléfono/WhatsApp', 'Estudiante', 'Grado/Año', 'Fecha de Registro'])
+    for reg in registros:
+        writer.writerow(list(reg))
+
+    output.seek(0)
+    return Response(
+        output.getvalue().encode('utf-8-sig'),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment;filename=registros_guadalupe.csv"}
+    )
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
